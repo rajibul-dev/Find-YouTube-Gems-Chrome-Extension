@@ -71,19 +71,17 @@ function computeScore(video: SimpleVideo): number {
   const dislikes = video.dislikes || 0;
   const views = video.viewCount || 0;
 
-  // base ratio
   const ratio = likes + dislikes > 0 ? likes / (likes + dislikes) : 0.5;
-
-  // confidence penalty for low-like videos
-  const confidence = Math.min(1, likes / CONFIG.FULL_CONFIDENCE_LIKES); // full trust at 1k likes
-
-  // small videos (like < 10) get harsh penalty
+  const confidence = Math.min(1, likes / CONFIG.FULL_CONFIDENCE_LIKES);
   const smallPenalty = likes < 10 ? 0.5 : 1;
+  const viewWeight = Math.min(1, Math.log10(views + 1) / 6);
 
-  // slight bump for higher views
-  const viewBonus = Math.log10(views + 10) / 10;
+  // main weighted model
+  let score = ratio * 0.7 + confidence * 0.2 + viewWeight * 0.1;
 
-  const score = ratio * confidence * smallPenalty + viewBonus;
+  // apply penalty at the end
+  score *= smallPenalty;
+
   return Number(score.toFixed(6));
 }
 
@@ -121,62 +119,122 @@ function normalizeVideo(item: any, stats?: LikeDislikeData): SimpleVideo {
 
 function filterAndSort(videos: SimpleVideo[]) {
   // 1. Filter out videos with less than MIN_LIKES
-  // 2. Sort by score descending
+  // 2. higher score first
   return videos
     .filter((v) => v.likes >= CONFIG.MIN_LIKES)
     .sort((a, b) => b.score - a.score);
 }
 
 export function renderVideoElement(video: SimpleVideo): HTMLElement {
-  const el = document.createElement("ytd-video-renderer");
-  el.classList.add("style-scope", "ytd-vertical-list-renderer");
-  el.setAttribute("bigger-thumbs-style", "BIG");
-  el.setAttribute("is-search", "");
-  el.setAttribute("use-search-ui", "");
-  el.setAttribute("use-bigger-thumbs", "");
+  const wrapper = document.createElement("div");
+  wrapper.className =
+    "yt-enhanced-video style-scope ytd-vertical-list-renderer";
+  wrapper.style.cssText = `
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 8px;
+    border-radius: 12px;
+    background: #f9f9f9;
+    border: 1px solid #e5e5e5;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  `;
+  wrapper.onmouseenter = () => {
+    wrapper.style.transform = "translateY(-2px)";
+    wrapper.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)";
+  };
+  wrapper.onmouseleave = () => {
+    wrapper.style.transform = "translateY(0)";
+    wrapper.style.boxShadow = "none";
+  };
 
-  // inner HTML (simplified version of YouTube structure)
-  el.innerHTML = `
-    <div id="dismissible" class="style-scope ytd-video-renderer">
-      <ytd-thumbnail class="style-scope ytd-video-renderer" size="large">
-        <a id="thumbnail" class="yt-simple-endpoint inline-block style-scope ytd-thumbnail"
-          href="/watch?v=${video.videoId}" target="_blank">
-          <img
-            alt="${video.title}"
-            class="ytCoreImageHost ytCoreImageFillParentHeight ytCoreImageFillParentWidth ytCoreImageContentModeScaleAspectFill"
-            src="${video.thumbnail}"
-            style="border-radius: 8px; background-color: transparent;"
-          />
-        </a>
-      </ytd-thumbnail>
-      <div class="text-wrapper style-scope ytd-video-renderer">
-        <div id="meta" class="style-scope ytd-video-renderer">
-          <div id="title-wrapper" class="style-scope ytd-video-renderer">
-            <h3 class="title-and-badge style-scope ytd-video-renderer" style="font-size: 16px;">
-              <a id="video-title"
-                class="yt-simple-endpoint style-scope ytd-video-renderer"
-                href="/watch?v=${video.videoId}"
-                title="${video.title}"
-                target="_blank"
-                style="text-decoration: none; color: inherit; font-weight: 600;"
-              >
-                ${video.title}
-              </a>
-            </h3>
-            <div style="font-size: 13px; color: #606060;">${
-              video.channelTitle
-            }</div>
-            <div style="font-size: 12px; color: #111; margin-top: 4px;">
-              ${video.likes.toLocaleString()} 👍 | ${video.dislikes.toLocaleString()} 👎 |
-              ${video.likePercent ? video.likePercent.toFixed(1) + "%" : "—"}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `.trim();
+  // --- Thumbnail ---
+  const thumbLink = document.createElement("a");
+  thumbLink.href = `/watch?v=${video.videoId}`;
+  thumbLink.target = "_blank";
+  thumbLink.style.cssText = `
+    flex-shrink: 0;
+    width: 180px;
+    height: 100px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #ddd;
+    display: block;
+  `;
 
-  return el;
+  const img = document.createElement("img");
+  img.src = video.thumbnail || "https://i.ytimg.com/img/no_thumbnail.jpg";
+  img.alt = video.title;
+  img.loading = "lazy";
+  img.style.cssText = `
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  `;
+
+  img.onerror = () => {
+    img.src = "https://i.ytimg.com/img/no_thumbnail.jpg";
+  };
+
+  thumbLink.appendChild(img);
+
+  // --- Meta / Text Section ---
+  const meta = document.createElement("div");
+  meta.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  `;
+
+  // Title
+  const title = document.createElement("a");
+  title.href = `/watch?v=${video.videoId}`;
+  title.target = "_blank";
+  title.textContent = video.title;
+  title.className = "yt-simple-endpoint style-scope ytd-video-renderer";
+  title.style.cssText = `
+    font-size: 16px;
+    font-weight: 600;
+    color: #0f0f0f;
+    text-decoration: none;
+    line-height: 1.3;
+    margin-bottom: 4px;
+  `;
+  title.onmouseenter = () => (title.style.textDecoration = "underline");
+  title.onmouseleave = () => (title.style.textDecoration = "none");
+
+  // Channel name
+  const channel = document.createElement("div");
+  channel.textContent = video.channelTitle || "Unknown Channel";
+  channel.style.cssText = `
+    font-size: 13px;
+    color: #606060;
+    margin-bottom: 6px;
+  `;
+
+  // Stats line
+  const stats = document.createElement("div");
+  const ratio =
+    video.likePercent != null ? video.likePercent.toFixed(1) + "%" : "—";
+  stats.innerHTML = `
+    <span style="font-size: 12px; color: #111;">
+      ${video.likes.toLocaleString()} 👍 &nbsp;|&nbsp;
+      ${video.dislikes.toLocaleString()} 👎 &nbsp;|&nbsp;
+      ${ratio}
+    </span>
+  `;
+
+  meta.appendChild(title);
+  meta.appendChild(channel);
+  meta.appendChild(stats);
+
+  wrapper.appendChild(thumbLink);
+  wrapper.appendChild(meta);
+
+  return wrapper;
 }
 
 function injectEnhancedResults(videos: SimpleVideo[]) {
