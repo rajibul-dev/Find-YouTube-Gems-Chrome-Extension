@@ -1,3 +1,6 @@
+const AMOUNTS_TO_FETCH = 500; // total videos to fetch
+const PAGINATION_NUMBER = AMOUNTS_TO_FETCH / 50;
+
 import { useEffect, useState } from "react";
 import { PiSparkleFill } from "react-icons/pi";
 
@@ -165,6 +168,36 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   return el;
 }
 
+function injectEnhancedResults(videos: SimpleVideo[]) {
+  // YouTube’s search result container
+  const container = document.querySelector(
+    "ytd-section-list-renderer ytd-item-section-renderer #contents"
+  );
+
+  if (!container) {
+    console.warn("⚠️ Could not find YouTube results container.");
+    return;
+  }
+
+  // Optional: backup original YouTube results (so you can restore if needed)
+  const original = container.cloneNode(true);
+  (window as any).__yt_original_results__ = original;
+
+  // Clear existing results
+  container.innerHTML = "";
+
+  // Inject enhanced videos
+  const fragment = document.createDocumentFragment();
+  videos.forEach((video) => {
+    const el = renderVideoElement(video);
+    fragment.appendChild(el);
+  });
+
+  container.appendChild(fragment);
+
+  console.log(`✅ Injected ${videos.length} enhanced videos.`);
+}
+
 // ---------- Component ----------
 export default function ContentPage() {
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
@@ -212,7 +245,7 @@ export default function ContentPage() {
       let nextPageToken: string | undefined = undefined;
 
       // Fetch up to 10 pages (10×50 = 500 videos)
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < PAGINATION_NUMBER; i++) {
         const url = new URL("https://www.googleapis.com/youtube/v3/search");
         url.searchParams.set("part", "snippet");
         url.searchParams.set("type", "video");
@@ -248,6 +281,7 @@ export default function ContentPage() {
       const finalList = filterAndSort(cleanList);
 
       setResults(finalList);
+      injectEnhancedResults(finalList);
 
       console.log("✅ Final SimpleVideo list (sorted):", finalList);
     } catch (err) {
