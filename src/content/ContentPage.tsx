@@ -1,10 +1,19 @@
-const AMOUNTS_TO_FETCH = 500; // total videos to fetch
-const PAGINATION_NUMBER = AMOUNTS_TO_FETCH / 50;
-
 import { useEffect, useState } from "react";
 import { PiSparkleFill } from "react-icons/pi";
 
 const API_KEY = import.meta.env.VITE_YT_API_KEY;
+
+// ---------- CONFIG ----------
+const CONFIG = {
+  TOTAL_VIDEOS_TO_FETCH: 500,
+  PAGE_SIZE: 50, // max 50 for YouTube API
+  MIN_LIKES: 20, // filter out videos with less than this many likes
+  FULL_CONFIDENCE_LIKES: 500, // number of likes to reach full confidence in like ratio
+};
+
+const TOTAL_PAGES_TO_FETCH = Math.ceil(
+  CONFIG.TOTAL_VIDEOS_TO_FETCH / CONFIG.PAGE_SIZE
+);
 
 // reference of like/dislike data
 // {
@@ -66,7 +75,7 @@ function computeScore(video: SimpleVideo): number {
   const ratio = likes + dislikes > 0 ? likes / (likes + dislikes) : 0.5;
 
   // confidence penalty for low-like videos
-  const confidence = Math.min(1, likes / 1000); // full trust at 1k likes
+  const confidence = Math.min(1, likes / CONFIG.FULL_CONFIDENCE_LIKES); // full trust at 1k likes
 
   // small videos (like < 10) get harsh penalty
   const smallPenalty = likes < 10 ? 0.5 : 1;
@@ -111,9 +120,11 @@ function normalizeVideo(item: any, stats?: LikeDislikeData): SimpleVideo {
 }
 
 function filterAndSort(videos: SimpleVideo[]) {
-  // Example logic:
-  // Exclude low-like videos (<40 likes), then sort by score descending
-  return videos.filter((v) => v.likes >= 40).sort((a, b) => b.score - a.score);
+  // 1. Filter out videos with less than MIN_LIKES
+  // 2. Sort by score descending
+  return videos
+    .filter((v) => v.likes >= CONFIG.MIN_LIKES)
+    .sort((a, b) => b.score - a.score);
 }
 
 export function renderVideoElement(video: SimpleVideo): HTMLElement {
@@ -244,12 +255,12 @@ export default function ContentPage() {
       let allResults: any[] = [];
       let nextPageToken: string | undefined = undefined;
 
-      // Fetch up to 10 pages (10×50 = 500 videos)
-      for (let i = 0; i < PAGINATION_NUMBER; i++) {
+      // Paginated fetch
+      for (let i = 0; i < TOTAL_PAGES_TO_FETCH; i++) {
         const url = new URL("https://www.googleapis.com/youtube/v3/search");
         url.searchParams.set("part", "snippet");
         url.searchParams.set("type", "video");
-        url.searchParams.set("maxResults", "50");
+        url.searchParams.set("maxResults", CONFIG.PAGE_SIZE.toString());
         url.searchParams.set("q", searchQuery);
         url.searchParams.set("key", API_KEY);
         if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
