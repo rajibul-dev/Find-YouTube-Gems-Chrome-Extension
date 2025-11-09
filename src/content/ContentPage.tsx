@@ -3,6 +3,34 @@ import { PiSparkleFill } from "react-icons/pi";
 
 const API_KEY = import.meta.env.VITE_YT_API_KEY;
 
+// reference of like/dislike data
+// {
+//  "id": "kxOuG8jMIgI",
+//  "dateCreated": "2021-12-20T12:25:54.418014Z",
+//  "likes": 27326,
+//  "dislikes": 498153,
+//  "rating": 1.212014408444885,
+//  "viewCount": 3149885,
+//  "deleted": false
+// }
+
+interface LikeDislikeData {
+  id: string;
+  dateCreated: string;
+  likes: number;
+  dislikes: number;
+  rating: number;
+  viewCount: number;
+  deleted: boolean;
+}
+
+async function fetchLikeAndDislikes(videoId: string): Promise<LikeDislikeData> {
+  const result = await fetch(
+    `https://returnyoutubedislikeapi.com/votes?videoId=${videoId}`
+  );
+  return result.json();
+}
+
 export default function ContentPage() {
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
@@ -39,20 +67,54 @@ export default function ContentPage() {
   }, []);
 
   // ✅ Effect 2 — Fetch when Enhance button is clicked
-  const handleClick = () => {
+  const handleClick = async () => {
     if (!searchQuery) return;
-
     setLoading(true);
+    setResults([]);
 
-    fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q=${encodeURIComponent(
-        searchQuery
-      )}&key=${API_KEY}&maxResults=50`
-    )
-      .then((res) => res.json())
-      .then((data) => setResults(data.items || []))
-      .catch((err) => console.error("YouTube API error:", err))
-      .finally(() => setLoading(false));
+    try {
+      let allResults: any[] = [];
+      let nextPageToken: string | undefined = undefined;
+
+      // Fetch up to 10 pages (10×50 = 500 videos)
+      for (let i = 0; i < 10; i++) {
+        const url = new URL("https://www.googleapis.com/youtube/v3/search");
+        url.searchParams.set("part", "snippet");
+        url.searchParams.set("type", "video");
+        url.searchParams.set("maxResults", "50");
+        url.searchParams.set("q", searchQuery);
+        url.searchParams.set("key", API_KEY);
+        if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
+
+        const res = await fetch(url.toString());
+        const data = await res.json();
+
+        if (!data.items) break;
+        allResults = [...allResults, ...data.items];
+        nextPageToken = data.nextPageToken;
+        if (!nextPageToken) break;
+      }
+
+      // Optionally: parallel fetch like/dislike ratios
+      const enriched = await Promise.all(
+        allResults.map(async (item) => {
+          const id = item.id?.videoId;
+          if (!id) return item;
+          try {
+            const ld = await fetchLikeAndDislikes(id);
+            return { ...item, stats: ld };
+          } catch {
+            return item;
+          }
+        })
+      );
+
+      setResults(enriched);
+    } catch (err) {
+      console.error("YouTube API error:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
