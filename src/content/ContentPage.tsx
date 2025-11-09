@@ -126,6 +126,22 @@ function filterAndSort(videos: SimpleVideo[]) {
 }
 
 export function renderVideoElement(video: SimpleVideo): HTMLElement {
+  // Detect if YouTube is in dark mode (checks for html[dark] or prefers-color-scheme)
+  const isDarkMode =
+    document.documentElement.hasAttribute("dark") ||
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+  const colors = {
+    background: isDarkMode ? "#181818" : "#f9f9f9",
+    border: isDarkMode ? "1px solid #303030" : "1px solid #e5e5e5",
+    text: isDarkMode ? "#f1f1f1" : "#0f0f0f",
+    subtext: isDarkMode ? "#aaa" : "#606060",
+    stat: isDarkMode ? "#ccc" : "#111",
+    hoverShadow: isDarkMode
+      ? "0 2px 8px rgba(255,255,255,0.05)"
+      : "0 2px 6px rgba(0,0,0,0.08)",
+  };
+
   const wrapper = document.createElement("div");
   wrapper.className =
     "yt-enhanced-video style-scope ytd-vertical-list-renderer";
@@ -136,13 +152,13 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     margin-bottom: 16px;
     padding: 8px;
     border-radius: 12px;
-    background: #f9f9f9;
-    border: 1px solid #e5e5e5;
+    background: ${colors.background};
+    border: ${colors.border};
     transition: transform 0.15s ease, box-shadow 0.15s ease;
   `;
   wrapper.onmouseenter = () => {
     wrapper.style.transform = "translateY(-2px)";
-    wrapper.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)";
+    wrapper.style.boxShadow = colors.hoverShadow;
   };
   wrapper.onmouseleave = () => {
     wrapper.style.transform = "translateY(0)";
@@ -159,7 +175,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     height: 100px;
     border-radius: 8px;
     overflow: hidden;
-    background: #ddd;
+    background: #222;
     display: block;
   `;
 
@@ -173,14 +189,12 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     object-fit: cover;
     display: block;
   `;
-
   img.onerror = () => {
     img.src = "https://i.ytimg.com/img/no_thumbnail.jpg";
   };
-
   thumbLink.appendChild(img);
 
-  // --- Meta / Text Section ---
+  // --- Meta Section ---
   const meta = document.createElement("div");
   meta.style.cssText = `
     display: flex;
@@ -198,7 +212,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   title.style.cssText = `
     font-size: 16px;
     font-weight: 600;
-    color: #0f0f0f;
+    color: ${colors.text};
     text-decoration: none;
     line-height: 1.3;
     margin-bottom: 4px;
@@ -211,7 +225,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   channel.textContent = video.channelTitle || "Unknown Channel";
   channel.style.cssText = `
     font-size: 13px;
-    color: #606060;
+    color: ${colors.subtext};
     margin-bottom: 6px;
   `;
 
@@ -220,7 +234,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   const ratio =
     video.likePercent != null ? video.likePercent.toFixed(1) + "%" : "—";
   stats.innerHTML = `
-    <span style="font-size: 12px; color: #111;">
+    <span style="font-size: 12px; color: ${colors.stat};">
       ${video.likes.toLocaleString()} 👍 &nbsp;|&nbsp;
       ${video.dislikes.toLocaleString()} 👎 &nbsp;|&nbsp;
       ${ratio}
