@@ -14,6 +14,7 @@ const API_KEY = import.meta.env.VITE_YT_API_KEY;
 //  "deleted": false
 // }
 
+// ---------- Interfaces ----------
 interface LikeDislikeData {
   id: string;
   dateCreated: string;
@@ -24,6 +25,22 @@ interface LikeDislikeData {
   deleted: boolean;
 }
 
+interface SimpleVideo {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  description?: string;
+  thumbnail: string;
+  publishedAt?: string;
+  viewCount?: number;
+  likes: number;
+  dislikes: number;
+  likePercent: number | null;
+  score: number;
+  stats?: LikeDislikeData;
+}
+
+// ---------- Utils ----------
 async function fetchLikeAndDislikes(videoId: string): Promise<LikeDislikeData> {
   const result = await fetch(
     `https://returnyoutubedislikeapi.com/votes?videoId=${videoId}`
@@ -31,6 +48,124 @@ async function fetchLikeAndDislikes(videoId: string): Promise<LikeDislikeData> {
   return result.json();
 }
 
+function computeLikePercent(likes: number, dislikes: number): number | null {
+  const total = likes + dislikes;
+  if (total === 0) return null;
+  return (likes / total) * 100;
+}
+
+function computeScore(video: SimpleVideo): number {
+  const likes = video.likes || 0;
+  const dislikes = video.dislikes || 0;
+  const views = video.viewCount || 0;
+
+  // base ratio
+  const ratio = likes + dislikes > 0 ? likes / (likes + dislikes) : 0.5;
+
+  // confidence penalty for low-like videos
+  const confidence = Math.min(1, likes / 1000); // full trust at 1k likes
+
+  // small videos (like < 10) get harsh penalty
+  const smallPenalty = likes < 10 ? 0.5 : 1;
+
+  // slight bump for higher views
+  const viewBonus = Math.log10(views + 10) / 10;
+
+  const score = ratio * confidence * smallPenalty + viewBonus;
+  return Number(score.toFixed(6));
+}
+
+function normalizeVideo(item: any, stats?: LikeDislikeData): SimpleVideo {
+  const snippet = item.snippet || {};
+  const likes = stats?.likes ?? 0;
+  const dislikes = stats?.dislikes ?? 0;
+
+  const likePercent = computeLikePercent(likes, dislikes);
+  const videoId = item.id?.videoId || item.id;
+  const thumbnail =
+    snippet.thumbnails?.high?.url ||
+    snippet.thumbnails?.medium?.url ||
+    snippet.thumbnails?.default?.url ||
+    "";
+
+  const video: SimpleVideo = {
+    videoId,
+    title: snippet.title,
+    channelTitle: snippet.channelTitle,
+    description: snippet.description,
+    thumbnail,
+    publishedAt: snippet.publishedAt,
+    viewCount: stats?.viewCount || 0,
+    likes,
+    dislikes,
+    likePercent,
+    stats,
+    score: 0,
+  };
+
+  video.score = computeScore(video);
+  return video;
+}
+
+function filterAndSort(videos: SimpleVideo[]) {
+  // Example logic:
+  // Exclude low-like videos (<40 likes), then sort by score descending
+  return videos.filter((v) => v.likes >= 40).sort((a, b) => b.score - a.score);
+}
+
+export function renderVideoElement(video: SimpleVideo): HTMLElement {
+  const el = document.createElement("ytd-video-renderer");
+  el.classList.add("style-scope", "ytd-vertical-list-renderer");
+  el.setAttribute("bigger-thumbs-style", "BIG");
+  el.setAttribute("is-search", "");
+  el.setAttribute("use-search-ui", "");
+  el.setAttribute("use-bigger-thumbs", "");
+
+  // inner HTML (simplified version of YouTube structure)
+  el.innerHTML = `
+    <div id="dismissible" class="style-scope ytd-video-renderer">
+      <ytd-thumbnail class="style-scope ytd-video-renderer" size="large">
+        <a id="thumbnail" class="yt-simple-endpoint inline-block style-scope ytd-thumbnail"
+          href="/watch?v=${video.videoId}" target="_blank">
+          <img
+            alt="${video.title}"
+            class="ytCoreImageHost ytCoreImageFillParentHeight ytCoreImageFillParentWidth ytCoreImageContentModeScaleAspectFill"
+            src="${video.thumbnail}"
+            style="border-radius: 8px; background-color: transparent;"
+          />
+        </a>
+      </ytd-thumbnail>
+      <div class="text-wrapper style-scope ytd-video-renderer">
+        <div id="meta" class="style-scope ytd-video-renderer">
+          <div id="title-wrapper" class="style-scope ytd-video-renderer">
+            <h3 class="title-and-badge style-scope ytd-video-renderer" style="font-size: 16px;">
+              <a id="video-title"
+                class="yt-simple-endpoint style-scope ytd-video-renderer"
+                href="/watch?v=${video.videoId}"
+                title="${video.title}"
+                target="_blank"
+                style="text-decoration: none; color: inherit; font-weight: 600;"
+              >
+                ${video.title}
+              </a>
+            </h3>
+            <div style="font-size: 13px; color: #606060;">${
+              video.channelTitle
+            }</div>
+            <div style="font-size: 12px; color: #111; margin-top: 4px;">
+              ${video.likes.toLocaleString()} 👍 | ${video.dislikes.toLocaleString()} 👎 |
+              ${video.likePercent ? video.likePercent.toFixed(1) + "%" : "—"}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `.trim();
+
+  return el;
+}
+
+// ---------- Component ----------
 export default function ContentPage() {
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
@@ -88,28 +223,33 @@ export default function ContentPage() {
 
         const res = await fetch(url.toString());
         const data = await res.json();
-
         if (!data.items) break;
+
         allResults = [...allResults, ...data.items];
         nextPageToken = data.nextPageToken;
         if (!nextPageToken) break;
       }
 
-      // Optionally: parallel fetch like/dislike ratios
+      // Parallel fetch + normalize + scoring
       const enriched = await Promise.all(
         allResults.map(async (item) => {
           const id = item.id?.videoId;
-          if (!id) return item;
+          if (!id) return null;
           try {
             const ld = await fetchLikeAndDislikes(id);
-            return { ...item, stats: ld };
+            return normalizeVideo(item, ld);
           } catch {
-            return item;
+            return normalizeVideo(item);
           }
         })
       );
 
-      setResults(enriched);
+      const cleanList = enriched.filter((v): v is SimpleVideo => v !== null);
+      const finalList = filterAndSort(cleanList);
+
+      setResults(finalList);
+
+      console.log("✅ Final SimpleVideo list (sorted):", finalList);
     } catch (err) {
       console.error("YouTube API error:", err);
     } finally {
