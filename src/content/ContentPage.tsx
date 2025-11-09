@@ -1,7 +1,50 @@
 import { useEffect, useState } from "react";
 import { PiSparkleFill } from "react-icons/pi";
 
-const API_KEY = import.meta.env.VITE_YT_API_KEY;
+// ---------- YouTube API Key Management ----------
+const API_KEYS: string[] = [];
+for (let i = 1; i <= 11; i++) {
+  const key = import.meta.env[`VITE_YT_API_KEY_${i}`];
+  if (key) API_KEYS.push(key);
+}
+
+let currentKeyIndex = 0;
+
+function getCurrentKey() {
+  return API_KEYS[currentKeyIndex % API_KEYS.length];
+}
+function rotateKey() {
+  currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+  console.warn(`🔄 Switched to API key #${currentKeyIndex + 1}`);
+}
+
+async function youtubeFetch(url: URL, maxRetries = API_KEYS.length) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    url.searchParams.set("key", getCurrentKey());
+    const res = await fetch(url.toString());
+    const data = await res.json();
+
+    // Check quota
+    const reason = data?.error?.errors?.[0]?.reason;
+    if (reason === "quotaExceeded") {
+      console.warn(`⚠️ Quota exceeded for key #${currentKeyIndex + 1}`);
+      rotateKey();
+      await new Promise((r) => setTimeout(r, 500)); // brief cooldown
+      continue; // try next key
+    }
+
+    // Handle other potential network issues
+    if (!res.ok) {
+      console.warn(`⚠️ YouTube API responded with ${res.status}`);
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+
+    return data;
+  }
+
+  throw new Error("❌ All YouTube API keys exhausted.");
+}
 
 // ---------- CONFIG ----------
 const CONFIG = {
@@ -334,11 +377,9 @@ export default function ContentPage() {
         url.searchParams.set("type", "video");
         url.searchParams.set("maxResults", CONFIG.PAGE_SIZE.toString());
         url.searchParams.set("q", searchQuery);
-        url.searchParams.set("key", API_KEY);
         if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
 
-        const res = await fetch(url.toString());
-        const data = await res.json();
+        const data = await youtubeFetch(url);
         if (!data.items) break;
 
         allResults = [...allResults, ...data.items];
