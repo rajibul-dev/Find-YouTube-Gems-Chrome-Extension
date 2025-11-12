@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { PiSparkleFill } from "react-icons/pi";
+import { formatDistanceToNow } from "date-fns";
 
 // ---------- YouTube API Key Management ----------
 const API_KEYS: string[] = [];
@@ -9,7 +10,6 @@ for (let i = 1; i <= 11; i++) {
 }
 
 let currentKeyIndex = 0;
-
 function getCurrentKey() {
   return API_KEYS[currentKeyIndex % API_KEYS.length];
 }
@@ -18,22 +18,32 @@ function rotateKey() {
   console.warn(`🔄 Switched to API key #${currentKeyIndex + 1}`);
 }
 
-async function youtubeFetch(url: URL, maxRetries = API_KEYS.length) {
+async function youtubeFetch(
+  url: URL,
+  maxRetries = Math.max(1, API_KEYS.length)
+) {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     url.searchParams.set("key", getCurrentKey());
     const res = await fetch(url.toString());
     const data = await res.json();
 
-    // Check quota
+    // Check quota / disabled / permission problems
     const reason = data?.error?.errors?.[0]?.reason;
     if (reason === "quotaExceeded") {
       console.warn(`⚠️ Quota exceeded for key #${currentKeyIndex + 1}`);
       rotateKey();
-      await new Promise((r) => setTimeout(r, 500)); // brief cooldown
-      continue; // try next key
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+    if (reason === "accessNotConfigured" || reason === "serviceDisabled") {
+      console.warn(
+        `⚠️ API not enabled for current project / key #${currentKeyIndex + 1}`
+      );
+      rotateKey();
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
     }
 
-    // Handle other potential network issues
     if (!res.ok) {
       console.warn(`⚠️ YouTube API responded with ${res.status}`);
       await new Promise((r) => setTimeout(r, 500));
@@ -57,17 +67,6 @@ const CONFIG = {
 const TOTAL_PAGES_TO_FETCH = Math.ceil(
   CONFIG.TOTAL_VIDEOS_TO_FETCH / CONFIG.PAGE_SIZE
 );
-
-// reference of like/dislike data
-// {
-//  "id": "kxOuG8jMIgI",
-//  "dateCreated": "2021-12-20T12:25:54.418014Z",
-//  "likes": 27326,
-//  "dislikes": 498153,
-//  "rating": 1.212014408444885,
-//  "viewCount": 3149885,
-//  "deleted": false
-// }
 
 // ---------- Interfaces ----------
 interface LikeDislikeData {
@@ -93,6 +92,8 @@ interface SimpleVideo {
   likePercent: number | null;
   score: number;
   stats?: LikeDislikeData;
+  // added at runtime:
+  durationFormatted?: string;
 }
 
 // ---------- Utils ----------
@@ -119,16 +120,51 @@ function computeScore(video: SimpleVideo): number {
   const smallPenalty = likes < 10 ? 0.5 : 1;
   const viewWeight = Math.min(1, Math.log10(views + 1) / 6);
 
-  // main weighted model
   let score = ratio * 0.7 + confidence * 0.2 + viewWeight * 0.1;
-
-  // apply penalty at the end
   score *= smallPenalty;
 
   return Number(score.toFixed(6));
 }
 
-function normalizeVideo(item: any, stats?: LikeDislikeData): SimpleVideo {
+// parse ISO 8601 duration (PT#H#M#S) into human hh:mm:ss or m:ss
+function formatDurationISO(iso: string | undefined): string | null {
+  if (!iso) return null;
+  // Example: PT1H2M30S, PT5M30S, PT45S
+  const regex = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/;
+  const m = iso.match(regex);
+  if (!m) return null;
+  const hours = parseInt(m[1] || "0", 10);
+  const mins = parseInt(m[2] || "0", 10);
+  const secs = parseInt(m[3] || "0", 10);
+
+  const two = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  if (hours > 0) return `${hours}:${two(mins)}:${two(secs)}`;
+  return `${mins}:${two(secs)}`;
+}
+
+// fetch video details (contentDetails, snippet, statistics) in batches (50 ids per call)
+async function fetchVideoDetailsMap(ids: string[]) {
+  const map = new Map<string, any>();
+  const chunkSize = 50;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+    url.searchParams.set("part", "contentDetails,snippet,statistics");
+    url.searchParams.set("id", chunk.join(","));
+    const data = await youtubeFetch(url);
+    if (!data?.items) continue;
+    for (const item of data.items) {
+      map.set(item.id, item);
+    }
+  }
+  return map;
+}
+
+function normalizeVideo(
+  item: any,
+  stats?: LikeDislikeData,
+  details?: any
+): SimpleVideo {
   const snippet = item.snippet || {};
   const likes = stats?.likes ?? 0;
   const dislikes = stats?.dislikes ?? 0;
@@ -141,20 +177,33 @@ function normalizeVideo(item: any, stats?: LikeDislikeData): SimpleVideo {
     snippet.thumbnails?.default?.url ||
     "";
 
+  const publishedFromDetails =
+    details?.snippet?.publishedAt || snippet.publishedAt;
+  const viewCount =
+    (details && Number(details.statistics?.viewCount || 0)) ||
+    stats?.viewCount ||
+    0;
+
+  const durationIso = details?.contentDetails?.duration;
+  const durationFormatted = formatDurationISO(durationIso);
+
   const video: SimpleVideo = {
     videoId,
     title: snippet.title,
     channelTitle: snippet.channelTitle,
     description: snippet.description,
     thumbnail,
-    publishedAt: snippet.publishedAt,
-    viewCount: stats?.viewCount || 0,
+    publishedAt: publishedFromDetails,
+    viewCount,
     likes,
     dislikes,
     likePercent,
     stats,
     score: 0,
   };
+
+  // attach formatted duration to the object for UI
+  (video as any).durationFormatted = durationFormatted ?? undefined;
 
   video.score = computeScore(video);
   return video;
@@ -169,7 +218,6 @@ function filterAndSort(videos: SimpleVideo[]) {
 }
 
 export function renderVideoElement(video: SimpleVideo): HTMLElement {
-  // Detect if YouTube is in dark mode (checks for html[dark] or prefers-color-scheme)
   const isDarkMode =
     document.documentElement.hasAttribute("dark") ||
     window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -183,6 +231,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     hoverShadow: isDarkMode
       ? "0 2px 8px rgba(255,255,255,0.05)"
       : "0 2px 6px rgba(0,0,0,0.08)",
+    overlayBg: "rgba(0,0,0,0.75)",
   };
 
   const wrapper = document.createElement("div");
@@ -213,6 +262,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   thumbLink.href = `/watch?v=${video.videoId}`;
   thumbLink.target = "_blank";
   thumbLink.style.cssText = `
+    position: relative;
     flex-shrink: 0;
     width: 180px;
     height: 100px;
@@ -237,6 +287,24 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   };
   thumbLink.appendChild(img);
 
+  // duration badge on thumbnail (YouTube-like)
+  if ((video as any).durationFormatted) {
+    const duration = document.createElement("span");
+    duration.textContent = (video as any).durationFormatted;
+    duration.style.cssText = `
+      position: absolute;
+      bottom: 6px;
+      right: 6px;
+      padding: 2px 6px;
+      font-size: 12px;
+      font-weight: 600;
+      background: ${colors.overlayBg};
+      color: #fff;
+      border-radius: 4px;
+    `;
+    thumbLink.appendChild(duration);
+  }
+
   // --- Meta Section ---
   const meta = document.createElement("div");
   meta.style.cssText = `
@@ -251,7 +319,6 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   title.href = `/watch?v=${video.videoId}`;
   title.target = "_blank";
   title.textContent = video.title;
-  title.className = "yt-simple-endpoint style-scope ytd-video-renderer";
   title.style.cssText = `
     font-size: 16px;
     font-weight: 600;
@@ -263,7 +330,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
   title.onmouseenter = () => (title.style.textDecoration = "underline");
   title.onmouseleave = () => (title.style.textDecoration = "none");
 
-  // Channel name
+  // Channel
   const channel = document.createElement("div");
   channel.textContent = video.channelTitle || "Unknown Channel";
   channel.style.cssText = `
@@ -272,15 +339,19 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     margin-bottom: 6px;
   `;
 
-  // Stats line
+  // Stats + uploaded time
   const stats = document.createElement("div");
   const ratio =
     video.likePercent != null ? video.likePercent.toFixed(1) + "%" : "—";
+  const uploadedAgo =
+    video.publishedAt &&
+    formatDistanceToNow(new Date(video.publishedAt), { addSuffix: true });
   stats.innerHTML = `
     <span style="font-size: 12px; color: ${colors.stat};">
       ${video.likes.toLocaleString()} 👍 &nbsp;|&nbsp;
       ${video.dislikes.toLocaleString()} 👎 &nbsp;|&nbsp;
-      ${ratio}
+      ${ratio} &nbsp;|&nbsp;
+      ${uploadedAgo || "—"}
     </span>
   `;
 
@@ -295,7 +366,6 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
 }
 
 function injectEnhancedResults(videos: SimpleVideo[]) {
-  // YouTube’s search result container
   const container = document.querySelector(
     "ytd-section-list-renderer ytd-item-section-renderer #contents"
   );
@@ -305,14 +375,12 @@ function injectEnhancedResults(videos: SimpleVideo[]) {
     return;
   }
 
-  // Optional: backup original YouTube results (so you can restore if needed)
+  // backup original
   const original = container.cloneNode(true);
   (window as any).__yt_original_results__ = original;
 
-  // Clear existing results
   container.innerHTML = "";
 
-  // Inject enhanced videos
   const fragment = document.createDocumentFragment();
   videos.forEach((video) => {
     const el = renderVideoElement(video);
@@ -320,38 +388,29 @@ function injectEnhancedResults(videos: SimpleVideo[]) {
   });
 
   container.appendChild(fragment);
-
   console.log(`✅ Injected ${videos.length} enhanced videos.`);
 }
 
 // ---------- Component ----------
 export default function ContentPage() {
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
-  const [results, setResults] = useState<any[]>([]);
+  // const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentUrl, setCurrentUrl] = useState(window.location.href);
   const path = new URL(currentUrl).pathname;
   const shouldShowButton = path === "/results" && searchQuery;
 
-  console.log(results);
-
-  // ✅ Effect 1 — React to YouTube’s SPA navigation events
+  // react to URL
   useEffect(() => {
     const updateUrlState = () => {
       const url = window.location.href;
       setCurrentUrl(url);
-
       const query = new URL(url).searchParams.get("search_query");
       setSearchQuery(query);
     };
 
-    // YouTube emits `yt-navigate-finish` after internal navigation
     window.addEventListener("yt-navigate-finish", updateUrlState);
-
-    // Also listen for manual back/forward (popstate)
     window.addEventListener("popstate", updateUrlState);
-
-    // Initialize on mount
     updateUrlState();
 
     return () => {
@@ -360,11 +419,11 @@ export default function ContentPage() {
     };
   }, []);
 
-  // ✅ Effect 2 — Fetch when Enhance button is clicked
+  // handle click
   const handleClick = async () => {
     if (!searchQuery) return;
     setLoading(true);
-    setResults([]);
+    // setResults([]);
 
     try {
       let allResults: any[] = [];
@@ -380,13 +439,13 @@ export default function ContentPage() {
         if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
 
         const data = await youtubeFetch(url);
-        if (!data.items) break;
+        if (!data?.items) break;
 
         allResults = [...allResults, ...data.items];
         nextPageToken = data.nextPageToken;
         if (!nextPageToken) break;
 
-        // Remove duplicate videos by videoId
+        // Remove duplicate videos by videoId as we accumulate
         const seen = new Set<string>();
         allResults = allResults.filter((item) => {
           const id = item.id?.videoId || item.id;
@@ -396,16 +455,25 @@ export default function ContentPage() {
         });
       }
 
+      // collect ids and fetch details
+      const ids = Array.from(
+        new Set(allResults.map((it) => it.id?.videoId || it.id).filter(Boolean))
+      );
+      const detailsMap = await fetchVideoDetailsMap(ids);
+
       // Parallel fetch + normalize + scoring
       const enriched = await Promise.all(
         allResults.map(async (item) => {
-          const id = item.id?.videoId;
+          const id = item.id?.videoId || item.id;
           if (!id) return null;
+          // call dislike API
           try {
             const ld = await fetchLikeAndDislikes(id);
-            return normalizeVideo(item, ld);
+            const details = detailsMap.get(id);
+            return normalizeVideo(item, ld, details);
           } catch {
-            return normalizeVideo(item);
+            const details = detailsMap.get(id);
+            return normalizeVideo(item, undefined, details);
           }
         })
       );
@@ -413,7 +481,7 @@ export default function ContentPage() {
       const cleanList = enriched.filter((v): v is SimpleVideo => v !== null);
       const finalList = filterAndSort(cleanList);
 
-      setResults(finalList);
+      // setResults(finalList);
       injectEnhancedResults(finalList);
 
       console.log("✅ Final SimpleVideo list (sorted):", finalList);
@@ -456,39 +524,3 @@ export default function ContentPage() {
     </button>
   );
 }
-
-// reference of a video item
-// {
-//   "kind": "youtube#searchResult",
-//   "etag": "hjvBcuiwqgm6HnSR8jUqsJbrA8o",
-//   "id": {
-//     "kind": "youtube#video",
-//     "videoId": "MI4ccHDFA_w"
-//   },
-//   "snippet": {
-//     "publishedAt": "2024-02-27T16:30:07Z",
-//     "channelId": "UCtFHdruMogfCGmUAHhtdi4w",
-//     "title": "How to quickly get started with the YouTube Search API",
-//     "description": "",
-//     "thumbnails": {
-//       "default": {
-//         "url": "https://i.ytimg.com/vi/MI4ccHDFA_w/default.jpg",
-//         "width": 120,
-//         "height": 90
-//       },
-//       "medium": {
-//         "url": "https://i.ytimg.com/vi/MI4ccHDFA_w/mqdefault.jpg",
-//         "width": 320,
-//         "height": 180
-//       },
-//       "high": {
-//         "url": "https://i.ytimg.com/vi/MI4ccHDFA_w/hqdefault.jpg",
-//         "width": 480,
-//         "height": 360
-//       }
-//     },
-//     "channelTitle": "Edward Banner",
-//     "liveBroadcastContent": "none",
-//     "publishTime": "2024-02-27T16:30:07Z"
-//   }
-// }
