@@ -293,7 +293,7 @@ export function renderVideoElement(video: SimpleVideo): HTMLElement {
     duration.textContent = (video as any).durationFormatted;
     duration.style.cssText = `
       position: absolute;
-      bottom: 6px;
+      bottom: 8px;
       right: 6px;
       padding: 2px 6px;
       font-size: 12px;
