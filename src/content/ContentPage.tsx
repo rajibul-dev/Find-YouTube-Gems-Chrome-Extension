@@ -48,10 +48,10 @@ async function youtubeFetch(url: URL, maxRetries = API_KEYS.length) {
 
 // ---------- CONFIG ----------
 const CONFIG = {
-  TOTAL_VIDEOS_TO_FETCH: 500,
+  TOTAL_VIDEOS_TO_FETCH: 3000,
   PAGE_SIZE: 50, // max 50 for YouTube API
   MIN_LIKES: 20, // filter out videos with less than this many likes
-  FULL_CONFIDENCE_LIKES: 500, // number of likes to reach full confidence in like ratio
+  FULL_CONFIDENCE_LIKES: 200, // number of likes to reach full confidence in like ratio
 };
 
 const TOTAL_PAGES_TO_FETCH = Math.ceil(
@@ -385,6 +385,15 @@ export default function ContentPage() {
         allResults = [...allResults, ...data.items];
         nextPageToken = data.nextPageToken;
         if (!nextPageToken) break;
+
+        // Remove duplicate videos by videoId
+        const seen = new Set<string>();
+        allResults = allResults.filter((item) => {
+          const id = item.id?.videoId || item.id;
+          if (!id || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
       }
 
       // Parallel fetch + normalize + scoring
